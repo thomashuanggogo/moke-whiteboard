@@ -4,6 +4,8 @@
 
 **[English](README.md)**
 
+**線上試用**：https://thomashuanggogo.github.io/moke-whiteboard/（iPad Safari 橫屏開啟即可）
+
 ## 為什麼做墨課？
 
 Doceri（2011–2022）證明了這個模式：白板上的每一筆都是時間事件，配合暫停標記掌握課堂節奏。然後它退役了。開源世界始終沒有補上這個缺口——GitHub 上沒有任何專案提供「筆跡級時間軸重播」的教學工具。墨課就是來填這個空的。

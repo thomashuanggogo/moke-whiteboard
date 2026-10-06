@@ -4,6 +4,8 @@ A free, open-source whiteboard lesson-recording app — a spiritual successor to
 
 **[繁體中文說明](README.zh-Hant.md)**
 
+**Try it live**: https://thomashuanggogo.github.io/moke-whiteboard/ (open in iPad Safari, landscape)
+
 ## Why Moke?
 
 Doceri (2011–2022) proved the model: a whiteboard where every stroke is a time event, with stop markers for classroom pacing. Then it was retired. The open-source world never filled the gap — no GitHub project offers stroke-level timeline replay for teaching. Moke does.
