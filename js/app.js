@@ -2,7 +2,7 @@
 'use strict';
 
 /* v45：版本號（發版時同步更新 sw.js 的 CACHE） */
-const APP_VERSION = 'v111';
+const APP_VERSION = 'v126';
 
 /* ---------- 小工具 ---------- */
 const $ = id => document.getElementById(id);
@@ -39,6 +39,8 @@ function todayStr() {
   /* ----- 工具列 ----- */
   const COLORS = ['#111111', '#ffffff', '#e03131', '#1971c2', '#2f9e44', '#f08c00', '#9c36b5', '#0c8599'];
   const colorBox = $('colors');
+  const colorPop = $('color-pop');
+  const colorDot = $('color-dot');
   COLORS.forEach(c => {
     const b = document.createElement('button');
     b.className = 'color' + (c === '#111111' ? ' active' : '');
@@ -48,13 +50,41 @@ function todayStr() {
       board.setColor(c);
       colorBox.querySelectorAll('.color').forEach(x => x.classList.remove('active'));
       b.classList.add('active');
+      colorDot.style.background = c; // v112：按鈕圓點同步當前顏色
+      colorPop.classList.add('hidden'); // v112：選完自動關閉
     };
     colorBox.appendChild(b);
   });
-  document.querySelectorAll('#tools .tool').forEach(b => {
+  // v112：顏色/粗細 popover 開關（點外面自動關）
+  // v124：popover 改 position:fixed（iPad 工具列 overflow-x:auto 會裁掉 absolute 層），用 JS 算位置
+  $('btn-color').onclick = (e) => {
+    e.stopPropagation();
+    if (colorPop.classList.contains('hidden')) {
+      const r = $('btn-color').getBoundingClientRect();
+      if (document.body.classList.contains('zen')) {
+        colorPop.style.left = (r.right + 6) + 'px';
+        colorPop.style.top = Math.max(8, r.top) + 'px';
+      } else {
+        colorPop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 200)) + 'px';
+        colorPop.style.top = (r.bottom + 6) + 'px';
+      }
+      colorPop.classList.remove('hidden');
+    } else {
+      colorPop.classList.add('hidden');
+    }
+  };
+  // v124：工具列捲動／視窗縮放時關掉 popover（fixed 定位不會跟著跑）
+  $('toolbar').addEventListener('scroll', () => colorPop.classList.add('hidden'), { passive: true });
+  window.addEventListener('resize', () => colorPop.classList.add('hidden'));
+  document.addEventListener('click', (e) => {
+    if (!colorPop.classList.contains('hidden') && !$('color-group').contains(e.target)) {
+      colorPop.classList.add('hidden');
+    }
+  });
+  document.querySelectorAll('#tools .tool[data-tool]').forEach(b => {
     b.onclick = () => {
       board.setTool(b.dataset.tool);
-      document.querySelectorAll('#tools .tool').forEach(x => x.classList.remove('active'));
+      document.querySelectorAll('#tools .tool[data-tool]').forEach(x => x.classList.remove('active'));
       document.querySelectorAll('#instruments .tool').forEach(x => { if (!x.dataset.overlay) x.classList.remove('active'); });
       b.classList.add('active');
     };
@@ -238,6 +268,23 @@ function todayStr() {
     };
   });
   $('width-range').oninput = e => board.setWidth(+e.target.value);
+  // v114：禪模式切換（工具列變左側直條；頂部列保留，🧘 直接開關）
+  $('btn-zen').onclick = () => {
+    document.body.classList.toggle('zen');
+    setTimeout(positionTlPull, 300); // 等版面切換完再定位時間軸把手
+  };
+  // v125：全螢幕（iPad Safari 藏網址列用；iPhone 不支援會靜默無反應）
+  // v126：主畫面（standalone）模式本來就沒網址列，按鈕自動隱藏
+  if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone) {
+    $('btn-fullscreen').style.display = 'none';
+  }
+  $('btn-fullscreen').onclick = () => {
+    const el = document.documentElement;
+    if (document.fullscreenElement) document.exitFullscreen();
+    else if (el.requestFullscreen) el.requestFullscreen();
+    else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+  };
+  document.addEventListener('fullscreenchange', () => board.resize());
   $('btn-undo').onclick = () => board.undo();
   $('btn-redo').onclick = () => board.redo();
   // v20：畫布浮動鈕（寫字時拇指可及）
@@ -816,7 +863,11 @@ function todayStr() {
         toast('📍 ' + (m && m.label || '段落') + ' — 已暫停，可臨時塗鴉');
         overlay.show();
       },
-      onEnd: () => toast('播放完畢')
+      onEnd: () => {
+        toast('播放完畢');
+        // v115：碼表一點即播（未開抽屜）時，播完自動回到即時書寫
+        if (!$('tl-pull').classList.contains('open')) closeTimeline();
+      }
     });
     bindPlayerKeys();
     await player.prepare();
@@ -886,7 +937,7 @@ function todayStr() {
       $('tl-handle-label').textContent = (t < live - 50) ? '⏪ 回放中 · 上滑收起回到即時' : '上滑收起時間軸';
       schedulePreview();
     },
-    onPlayState: playing => { $('btn-tl-play').textContent = playing ? '❚❚' : '▶'; },
+    onPlayState: playing => { $('btn-tl-play').textContent = playing ? '❚❚' : '▶'; $('tl-time').classList.toggle('playing', playing); }, // v112：碼表同步播放狀態
     onMarker: m => { toast('📍 ' + (m && m.label || '段落')); },
     onEdit: () => {
       renderTlTicks(tlDuration());
@@ -991,22 +1042,21 @@ function todayStr() {
     if (tlKeyHandler) { window.removeEventListener('keydown', tlKeyHandler); tlKeyHandler = null; }
   }
   $('btn-tl-exit').onclick = closeTimeline;
-  // v47：清除本頁時間軸（筆跡＋標記），畫布同步清空——每頁獨立，直接清當頁
-  $('btn-tl-play').onclick = () => {
-    // v60：不用下拉時間軸也能播放（自動啟用 TLC）
+  // v115：碼表一點即播，不開抽屜（恢復 v60 行為）；播完自動回到即時書寫
+  function togglePlay() {
     if (!TLC.active) {
       const pg = board.page;
       const hasEvents = pg.tl && pg.tl.events && pg.tl.events.length > 0;
       if (!pg.strokes.length && !hasEvents) { toast('還沒有筆跡，先寫幾個字吧'); return; }
       TLC.activate();
       TLC.goTo(0);  // 從頭開始播
-      // 播放時鎖定書寫（跟下拉時間軸一樣）
       board.lockDraw = true;
-      board.onLockDraw = () => toast('按 ✕ 回到即時書寫', 1500);
-    }
-    if (TLC.playing) TLC.pause();
+      board.onLockDraw = () => toast('下拉時間軸 → ✕ 回到即時書寫', 1500);
+    } else if (TLC.playing) TLC.pause();
     else if (!TLC.play()) toast('已在即時進度');
-  };
+  }
+  $('tl-time').onclick = togglePlay;
+  $('btn-tl-play').onclick = togglePlay; // v119：回頂部，一點即播不開抽屜
   // v60：控制鈕不用下拉也能用（自動啟用 TLC）
   const ensureTLC = () => {
     if (TLC.active) return true;
@@ -1352,7 +1402,9 @@ function todayStr() {
   // v66：時間軸從工具箱下方開始，不蓋住筆刷工具
   function positionTlPull() {
     const tb = $('toolbar');
-    if (tb) $('tl-pull').style.top = tb.offsetHeight + 'px';
+    if (!tb) return;
+    // v114：禪模式工具列在左側直條，把手回到 stage 頂部
+    $('tl-pull').style.top = document.body.classList.contains('zen') ? '0px' : tb.offsetHeight + 'px';
   }
   window.addEventListener('resize', positionTlPull);
   // 初始化時定位
