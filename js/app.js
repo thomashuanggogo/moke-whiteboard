@@ -2,7 +2,7 @@
 'use strict';
 
 /* v45：版本號（發版時同步更新 sw.js 的 CACHE） */
-const APP_VERSION = 'v173';
+const APP_VERSION = 'v174';
 
 /* ---------- 小工具 ---------- */
 const $ = id => document.getElementById(id);
@@ -851,7 +851,7 @@ function fsGuardExit() {
   }
   function loadLessonToBoard(l) {
     if (TLC.active) closeTimeline();
-    board.rippleOk = !(l.audio && l.audio.length);   // v173：有錄音的課不補位（會跟聲音對不上）
+    board.rippleOk = true;   // v174：墨課不錄音，刪除後一律補位
     // v47：載入每頁獨立時間軸格式
     if (l.v === 47 && l.pages) {
       board.pages = l.pages.map(p => ({

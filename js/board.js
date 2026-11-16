@@ -20,7 +20,7 @@ class Board {
     this.onDrawEnd = null;        // 提筆後鉤子
     this.tlCutoff = null;         // v47：時間軸回放過濾（null＝全顯示，否則只畫 tlT <= cutoff 的筆跡）
     this._tlPlayhead = null;        // v47：回放中落筆時，筆跡的時間（null＝用自然時間）
-    this.rippleOk = true;           // v173：刪除後漣波補位（app.js 依課程有無錄音設定；有錄音＝false）
+    this.rippleOk = true;           // v173/v174：刪除後漣波補位（墨課不錄音，無條件補位；此旗標保留備用）
     this.lockDraw = false;          // v50：時間軸打開時鎖定書寫
     this.onLockDraw = null;         // v50：鎖定時嘗試書寫的回調（提示用）
     this._strokeSeq = 1;
@@ -402,9 +402,9 @@ class Board {
   }
 
   /* v173：漣波補位——移除被刪筆跡佔的時間區間，其後筆跡/事件同步前移，總長跟著縮。
-     只在 rippleOk（本課沒有錄音）時做：有錄音的課移時間會跟聲音對不上。 */
+     v174：墨課沒有錄音功能（2026-11-13 拍板不做、2026-11-16 南勛重申），不需護欄，無條件補位。 */
   rippleCompact(removed) {
-    if (!this.rippleOk || !removed || !removed.length) return;
+    if (!removed || !removed.length) return;
     const pg = this.page;
     const spans = removed
       .map(s => [s.tlT || 0, (s.tlT || 0) + (s.dur || 300)])
