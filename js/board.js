@@ -1212,9 +1212,9 @@ class Board {
     }
     this.pokeActivity();
     this.render();
-    // 旋轉後立即暫停時鐘（視為一次動作完成）
+    // 旋轉後立即暫停時鐘（視為一次動作完成）（T1 探索：錄音中不暫停，時鐘要跟聲音同為牆鐘時間）
     const tl = this.page && this.page.tl;
-    if (tl && tl.clock && tl.clock.running) {
+    if (tl && tl.clock && tl.clock.running && !(typeof window !== 'undefined' && window.MokeRec && window.MokeRec.isRecording())) {
       tl.clock.pause();
       const lastT = Math.round(this._liveEdgeT());
       tl.clock.base = lastT;
@@ -1323,7 +1323,8 @@ class Board {
     }
     this.pokeActivity();
     const tl = this.page && this.page.tl;
-    if (tl && tl.clock && tl.clock.running) {
+    // T1 探索：錄音中不暫停（此暫停點為 v206 新增，v205 年代不存在；改基至 v207 時補上守衛，同 _up 的理由）
+    if (tl && tl.clock && tl.clock.running && !(typeof window !== 'undefined' && window.MokeRec && window.MokeRec.isRecording())) {
       tl.clock.pause();
       const lastT = Math.round(this._liveEdgeT());
       tl.clock.base = lastT;
@@ -2064,9 +2065,9 @@ class Board {
             this._emit('move', { page: this.pageIndex, id: s.id, rotate: 'gesture' }, true);
           }
           this.pokeActivity();
-          // 暫停時鐘（視為一次動作完成）
+          // 暫停時鐘（視為一次動作完成）（T1 探索：錄音中不暫停，同 _up 的理由）
           const tl = this.page && this.page.tl;
-          if (tl && tl.clock && tl.clock.running) {
+          if (tl && tl.clock && tl.clock.running && !(typeof window !== 'undefined' && window.MokeRec && window.MokeRec.isRecording())) {
             tl.clock.pause();
             const lastT = Math.round(this._liveEdgeT());
             tl.clock.base = lastT;
@@ -2192,7 +2193,8 @@ class Board {
     // 只在沒有其他手指還按著時暫停（避免多指操作中斷）
     if ((hadGesture || handMoved || lassoMoved) && this._pointers.size === 0) {
       const tl = this.page && this.page.tl;
-      if (tl && tl.clock && tl.clock.running) {
+      // T1 探索：錄音中不提筆暫停——聲音是牆鐘時間，時鐘一停/倒回，筆跡 tlT 就跟錄音對不齊
+      if (tl && tl.clock && tl.clock.running && !(typeof window !== 'undefined' && window.MokeRec && window.MokeRec.isRecording())) {
         tl.clock.pause();
         // 倒回最後事件時間，保持與時間軸一致（v102 邏輯）
         const lastT = Math.round(this._liveEdgeT());

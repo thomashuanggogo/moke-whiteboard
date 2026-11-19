@@ -21,6 +21,8 @@
     <div class="brand" id="brand-help" title="點我看使用說明" style="cursor:pointer">🖌️ 墨課 <span id="app-ver" class="ver"></span></div>
     <div id="rec-controls">
       <button id="btn-mark" class="rec-btn" title="插入段落標記（Stop Marker），隨時可用">🚩 <span class="btn-label">標記</span></button>
+      <!-- T1 探索：Doceri 式錄音（與本頁筆跡共用時間軸），js/rec.js 驅動 -->
+      <button id="btn-rec" class="rec-btn" title="錄音（T1 探索）：聲音跟這一頁的筆跡同步錄">🔴 <span class="btn-label">錄音</span></button>
       <!-- v119：全部重播按鈕回頂部（v111 佈局，不用下拉時間軸） -->
       <button id="btn-tl-start" title="跳到最前">◀◀</button>
       <button id="btn-tl-prev" title="上一個標記">◀◀</button>
@@ -251,6 +253,9 @@
       <button id="btn-export-png" title="將本頁存成 PNG 圖片">📷 本頁存成圖片</button>
       <button id="btn-export-pdf" title="將全部頁面存成 PDF">📄 全部存成 PDF</button>
     </div>
+    <div class="row">
+      <button id="btn-rec-export" title="把目前頁的時間軸重播＋錄音即時錄成影片檔下載（T1 探索）">🎬 匯出影片（目前頁）</button>
+    </div>
     <div class="row end"><button class="modal-close">關閉</button></div>
   </div>
 </div>
@@ -389,5 +394,6 @@
 <script src="js/lesson.js"></script>
 <script src="js/stickers.js"></script>
 <script src="js/app.js"></script>
+<script src="js/rec.js"></script>
 </body>
 </html>

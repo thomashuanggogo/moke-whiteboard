@@ -2,7 +2,7 @@
 'use strict';
 
 /* v45：版本號（發版時同步更新 sw.js 的 CACHE） */
-const APP_VERSION = 'v207';
+const APP_VERSION = 'T1';
 
 /* ---------- 小工具 ---------- */
 const $ = id => document.getElementById(id);
@@ -1404,8 +1404,8 @@ function fsGuardExit() {
     if (TLC.active) return;  // 回放中由 TLC 自己更新
     const pg = board.page;
     if (!pg || !pg.tl || !pg.tl.clock || !pg.tl.clock.running) return;
-    // 5 秒閒置 → 暫停時鐘
-    if (performance.now() - (board._lastActivity || 0) > 5000) {
+    // 5 秒閒置 → 暫停時鐘（T1 探索：錄音中不暫停——聲音走牆鐘時間，時鐘停下/倒回會與錄音對不齊）
+    if (performance.now() - (board._lastActivity || 0) > 5000 && !(window.MokeRec && window.MokeRec.isRecording())) {
       // v102：暫停時把時鐘倒回最後事件時間（去掉 5 秒 grace 的空白），
       // 否則頂部顯示 00:46 但時間軸只有 00:41，兩邊不一致
       const lastT = Math.round(TLC.liveEdge());
