@@ -15,10 +15,19 @@
  * 已知缺口（探索版接受）：
  * - 音訊只掛在頁面物件的執行期欄位 pg._trec，不寫進課程 JSON/IndexedDB，
  *   存檔、匯出課程檔、換頁重整後錄音都不保留。
- * - 錄音中換頁：聲音續錄、仍歸給開始錄的那一頁（該頁筆跡才對齊）。
  * - 錄音中若「清除本頁/復原」造成時間軸漣波搬移（tlT 被平移），已錄音訊不會跟著搬，對齊會跑掉。
  * 改基註記（v205→v207）：v206 新增的選取手勢結束暫停點（board.js _selGestureEnd）
  * 已補上 isRecording() 守衛；pageEdge 改依 v206 起的結束戳語意（頁尾＝最大 tlT）。
+ * T1.1（跨頁錄音）：錄音改為 session／段落兩層——同一個 mic stream 不中斷，
+ * 翻頁時結算當頁段落（存入該頁 _trec）、在新頁以該頁時鐘 now() 為 offsetTl 開新段。
+ * 翻頁偵測用 rec.js 內 120ms 輪詢 board.page（v207 沒有單一翻頁匯流點：delPage
+ * 繞過 gotoPage、lesson 載入與 PDF 匯出直接寫 pageIndex，輪詢全都抓得到，且維持
+ * rec.js 解耦風格）；連翻多頁以輪詢當下所在頁為準，途中頁不開段、不留空 _trec。
+ * T1.1（暫停／繼續）：特許暫停——使用者按暫停時 MediaRecorder.pause() 與段落頁
+ * 時鐘一起凍結、繼續時一起 resume，聲音與筆跡不脫鉤；這與 isRecording() 守衛擋的
+ * 「自動暫停」是兩回事，守衛不拆、isRecording() 在暫停中仍為 true。暫停期間以
+ * capture 階段攔下畫布 pointerdown 擋筆（時鐘凍結時落筆會讓時間戳混亂）。
+ * 暫停中翻頁：舊段結算到暫停點，新段等按「繼續」才在當下頁開段，不偷跑。
  * ============================================================ */
 (function () {
   'use strict';
@@ -29,12 +38,14 @@
   const T = s => (typeof window.t === 'function' ? window.t(s) : s);
 
   const btnRec = $('btn-rec');
+  const btnPause = $('btn-rec-pause');
   const btnExport = $('btn-rec-export');
 
   // 錄音中按鈕呼吸燈（探索版自帶最小樣式，不動 style.css）
   try {
     const st = document.createElement('style');
     st.textContent = '#btn-rec.rec-on{background:#e03131;color:#fff;border-color:#e03131;animation:mokeRecPulse 1.2s ease-in-out infinite}' +
+      '#btn-rec.rec-paused{animation:none;background:#f08c00;border-color:#f08c00}' +
       '@keyframes mokeRecPulse{0%,100%{opacity:1}50%{opacity:.5}}';
     document.head.appendChild(st);
   } catch (e) {}
@@ -49,16 +60,105 @@
   const pickAudioMime = () => pickMime(['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg']);
   const pickVideoMime = () => pickMime(['video/mp4;codecs=avc1.640028,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']);
 
-  /* ---------------- 1. 錄音 ---------------- */
-  let cur = null; // { mr, stream, chunks, page, offsetTl, mime }
+  /* ---------------- 1. 錄音（session／段落兩層：可跨頁、可暫停） ----------------
+   * session（cur）：一次「按錄音→按停止」的整體，持有 mic stream 不放、不重授權。
+   * 段落（cur.seg）：目前頁的一段 MediaRecorder。翻頁→結算舊段存入舊頁 _trec，
+   * 再於新頁以該頁時鐘 now() 為 offsetTl 開新段（同一個 stream）。
+   * 競態處理：mr.onstop 是唯一「段落結算」入口（onSegmentStop），所有收尾都匯流到它；
+   * switching 旗標期間翻頁偵測與暫停都先排隊（stopReq／wantPause），onstop 後統一裁決；
+   * 使用者停止優先於一切（stopReq 先檢查）；段落以物件身分認證，過期回呼直接忽略。 */
+  let cur = null; // { stream, mime, seg, switching, stopReq, paused, wantPause }
+                  // seg = { mr, chunks, page, offsetTl }
 
   function setRecBtn() {
-    if (!btnRec) return;
-    const on = !!cur;
-    btnRec.innerHTML = on
-      ? '⏹ <span class="btn-label">' + T('停止') + '</span>'
-      : '🔴 <span class="btn-label">' + T('錄音') + '</span>';
-    btnRec.classList.toggle('rec-on', on);
+    if (btnRec) {
+      const on = !!cur;
+      btnRec.innerHTML = on
+        ? '⏹ <span class="btn-label">' + T('停止') + '</span>'
+        : '🔴 <span class="btn-label">' + T('錄音') + '</span>';
+      btnRec.classList.toggle('rec-on', on);
+      btnRec.classList.toggle('rec-paused', !!(cur && cur.paused));
+    }
+    if (btnPause) {
+      btnPause.classList.toggle('hidden', !cur);
+      const p = !!(cur && (cur.paused || cur.wantPause));
+      btnPause.innerHTML = p
+        ? '▶ <span class="btn-label">' + T('繼續') + '</span>'
+        : '⏸ <span class="btn-label">' + T('暫停') + '</span>';
+    }
+  }
+
+  // 對齊關鍵：確保該頁有 tl 與正在走的時鐘，回傳目前時鐘讀數（段落的 offsetTl）
+  function ensureClock(pg) {
+    if (!pg.tl) pg.tl = { events: [], stops: [], clock: null, unadded: [], erased: [] };
+    try {
+      if (!pg.tl.clock) { pg.tl.clock = new LessonClock(); pg.tl.clock.start(); }
+      else if (!pg.tl.clock.running) pg.tl.clock.resume();
+    } catch (e) {}
+    return pg.tl.clock ? Math.round(pg.tl.clock.now()) : 0;
+  }
+
+  function openSegment(pg) {
+    const s = { chunks: [], page: pg, offsetTl: ensureClock(pg), mr: null };
+    let mr;
+    try {
+      mr = cur.mime ? new MediaRecorder(cur.stream, { mimeType: cur.mime }) : new MediaRecorder(cur.stream);
+    } catch (e) { return false; }
+    s.mr = mr;
+    mr.ondataavailable = e => { if (e.data && e.data.size) s.chunks.push(e.data); };
+    mr.onstop = () => onSegmentStop(s);
+    cur.seg = s;
+    try { mr.start(250); } catch (e) { cur.seg = null; return false; }
+    return true;
+  }
+
+  function storeSegment(s) {
+    const blob = new Blob(s.chunks, { type: cur.mime || 'audio/webm' });
+    if (!blob.size) return false;   // 空段不寫 _trec（連翻途中頁不留空段／壞狀態）
+    const old = s.page._trec;
+    if (old && old.url) { try { URL.revokeObjectURL(old.url); } catch (e) {} }
+    s.page._trec = {
+      blob, url: URL.createObjectURL(blob),
+      offsetTl: s.offsetTl, mime: blob.type, at: Date.now()
+    };
+    if (pbSrcFor === s.page) pbSrcFor = null; // 強制同步播放器換新來源
+    return true;
+  }
+
+  function onSegmentStop(s) {
+    if (!cur || cur.seg !== s) return;   // 過期回呼（段落已被取代）忽略
+    storeSegment(s);
+    cur.seg = null;
+    if (cur.stopReq) { endSession(true); return; }
+    cur.switching = false;
+    if (cur.paused) return;   // 暫停中翻頁：舊段結算到暫停點為止，新段等「繼續」再開
+    if (!openSegment(board.page)) { endSession(false); toast(T('錄音中斷：無法在新頁繼續錄音'), 3000); return; }
+    if (cur.wantPause) { cur.wantPause = false; pauseRec(); }   // 切段途中排隊的暫停，落到新段上
+  }
+
+  function beginSwitch() {
+    if (!cur || cur.switching || !cur.seg) return;
+    cur.switching = true;
+    const s = cur.seg;
+    if (s.mr.state !== 'inactive') {
+      try { s.mr.stop(); } catch (e) { onSegmentStop(s); }
+    } else onSegmentStop(s);
+  }
+
+  // 翻頁偵測：120ms 輪詢目前頁物件（為何不用匯流點通知，見檔頭 T1.1 註記）。
+  // 以輪詢當下所在頁為準——連翻多頁時途中頁不會被開段，自然不留空 _trec。
+  function watchPage() {
+    if (!cur || cur.switching || cur.stopReq || !cur.seg) return;
+    const pg = board.page;
+    if (pg && pg !== cur.seg.page) beginSwitch();
+  }
+  setInterval(() => { if (cur) watchPage(); }, 120);
+
+  function endSession(completed) {
+    const done = cur; cur = null;
+    if (done) { try { done.stream.getTracks().forEach(t => t.stop()); } catch (e) {} }
+    setRecBtn();
+    if (completed) toast(T('⏹ 錄音完成：播放各頁的時間軸就會同步播該頁的聲音'), 2800);
   }
 
   async function startRec() {
@@ -67,15 +167,7 @@
       toast(T('此瀏覽器不支援錄音（需要麥克風授權與 MediaRecorder）'), 3400);
       return;
     }
-    const pg = board.page;
-    if (!pg) return;
-    if (!pg.tl) pg.tl = { events: [], stops: [], clock: null, unadded: [], erased: [] };
-    // 對齊關鍵：確保本頁時鐘存在且在走，記下錄音起點的 tl 讀數
-    try {
-      if (!pg.tl.clock) { pg.tl.clock = new LessonClock(); pg.tl.clock.start(); }
-      else if (!pg.tl.clock.running) pg.tl.clock.resume();
-    } catch (e) {}
-    const offsetTl = pg.tl.clock ? Math.round(pg.tl.clock.now()) : 0;
+    if (!board.page) return;
     let stream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -84,46 +176,80 @@
       return;
     }
     const mime = pickAudioMime();
-    let mr;
-    try {
-      mr = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
-    } catch (e) {
-      try { stream.getTracks().forEach(t => t.stop()); } catch (e2) {}
+    cur = { stream, mime, seg: null, switching: false, stopReq: false, paused: false, wantPause: false };
+    // 以授權完成當下的所在頁開第一段（授權期間翻頁也不會錄錯頁）
+    if (!openSegment(board.page)) {
+      try { stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+      cur = null;
       toast(T('此瀏覽器不支援錄音'), 3400);
       return;
     }
-    cur = { mr, stream, chunks: [], page: pg, offsetTl, mime: mr.mimeType || mime || '' };
-    mr.ondataavailable = e => { if (cur && e.data && e.data.size) cur.chunks.push(e.data); };
-    mr.onstop = finishRec;
-    try { mr.start(250); } catch (e) { cur = null; toast(T('錄音啟動失敗'), 3000); return; }
     setRecBtn();
-    toast(T('🔴 錄音中：聲音會跟這一頁的筆跡同步'), 2200);
-  }
-
-  function finishRec() {
-    if (!cur) return;
-    const done = cur; cur = null;
-    try { done.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
-    setRecBtn();
-    const blob = new Blob(done.chunks, { type: done.mime || 'audio/webm' });
-    if (!blob.size) { toast(T('錄音失敗：沒有收到聲音資料'), 3000); return; }
-    const old = done.page._trec;
-    if (old && old.url) { try { URL.revokeObjectURL(old.url); } catch (e) {} }
-    done.page._trec = {
-      blob, url: URL.createObjectURL(blob),
-      offsetTl: done.offsetTl, mime: blob.type, at: Date.now()
-    };
-    if (pbSrcFor === done.page) pbSrcFor = null; // 強制同步播放器換新來源
-    toast(T('⏹ 錄音完成：播放這一頁的時間軸就會同步播聲音'), 2800);
+    toast(T('🔴 錄音中：翻頁會自動接著錄，每頁各存一段'), 2200);
   }
 
   function stopRec() {
-    if (cur && cur.mr.state !== 'inactive') {
-      try { cur.mr.stop(); } catch (e) { finishRec(); }
+    if (!cur) return;
+    cur.stopReq = true;
+    cur.wantPause = false;
+    if (cur.switching) return;   // 切段途中：onSegmentStop 會收尾
+    const s = cur.seg;
+    if (!s) { endSession(true); return; }   // 暫停中翻頁後（舊段已結算、無現行段）：直接收尾
+    if (s.mr.state !== 'inactive') {
+      try { s.mr.stop(); } catch (e) { onSegmentStop(s); }
+    } else onSegmentStop(s);
+  }
+
+  /* ----- 暫停／繼續（特許暫停：MR 與段落頁時鐘一起凍結／解凍，守衛不拆） ----- */
+  function pauseRec() {
+    if (!cur || cur.paused) return;
+    if (cur.switching || !cur.seg) { cur.wantPause = true; setRecBtn(); return; }  // 切段途中先排隊，落到新段
+    const s = cur.seg;
+    // feature-detect：不支援就明說並維持錄音，絕不假裝暫停（只停聲音不停時鐘＝整段脫鉤）
+    if (!s.mr || typeof s.mr.pause !== 'function') { toast(T('此瀏覽器不支援暫停'), 2600); return; }
+    try { s.mr.pause(); } catch (e) { toast(T('此瀏覽器不支援暫停'), 2600); return; }
+    if (s.mr.state !== 'paused') { toast(T('此瀏覽器不支援暫停'), 2600); return; }
+    try { const c = s.page.tl && s.page.tl.clock; if (c) c.pause(); } catch (e) {}
+    cur.paused = true;
+    setRecBtn();
+    toast(T('⏸ 已暫停：聲音和筆跡時鐘一起停住'), 2000);
+  }
+
+  function resumeRec() {
+    if (!cur) return;
+    cur.wantPause = false;   // 連按暫停→繼續：先撤銷排隊中的暫停
+    if (!cur.paused) { setRecBtn(); return; }
+    if (cur.switching) { cur.paused = false; setRecBtn(); return; }  // 切完段會以未暫停狀態開新段
+    if (!cur.seg) {
+      // 暫停中翻過頁：此刻才在當下頁開新段（offsetTl 以新頁時鐘此刻起算，不偷跑）
+      if (!openSegment(board.page)) { endSession(false); toast(T('錄音中斷：無法在新頁繼續錄音'), 3000); return; }
     }
+    const s = cur.seg;
+    try { const c = s.page.tl && s.page.tl.clock; if (c && !c.running) c.resume(); } catch (e) {}
+    if (s.mr.state === 'paused') { try { s.mr.resume(); } catch (e) {} }
+    cur.paused = false;
+    setRecBtn();
   }
 
   if (btnRec) btnRec.onclick = () => { if (cur) stopRec(); else startRec(); };
+  if (btnPause) btnPause.onclick = () => {
+    if (!cur) return;
+    if (cur.paused || cur.wantPause) resumeRec(); else pauseRec();
+  };
+
+  /* 暫停期間擋下畫布筆輸入：時鐘凍結時落筆，筆跡時間戳會擠在凍結點造成混亂。
+     在 document capture 階段攔截 target 為畫布的 pointerdown（board 的 canvas
+     handler 在 target 階段才跑，攔得到）；只擋畫布，不擋任何 UI 按鈕。
+     toast 節流 1.5 秒，避免連點洗版。 */
+  let lastBlockToast = 0;
+  document.addEventListener('pointerdown', e => {
+    if (!cur || !cur.paused) return;
+    if (e.target !== board.canvas) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const now = Date.now();
+    if (now - lastBlockToast > 1500) { lastBlockToast = now; toast(T('已暫停，按繼續才能寫'), 1800); }
+  }, true);
 
   /* ---------------- 2. 同步重播（輪詢 board.tlCutoff） ---------------- */
   const pbAudio = new Audio();
@@ -303,10 +429,13 @@
       const pg = board.page;
       const rec = pageRec(pg);
       return {
-        version: 'T1',
+        version: 'T1.1',
         recording: !!cur,
-        mrState: cur ? cur.mr.state : null,
-        curOffsetTl: cur ? cur.offsetTl : null,
+        paused: !!(cur && cur.paused),
+        switching: !!(cur && cur.switching),
+        segPageIdx: cur && cur.seg ? board.pages.indexOf(cur.seg.page) : -1,
+        mrState: cur && cur.seg ? cur.seg.mr.state : null,
+        curOffsetTl: cur && cur.seg ? cur.seg.offsetTl : null,
         hasRec: !!rec,
         blobSize: rec ? rec.blob.size : 0,
         recMime: rec ? rec.mime : null,
