@@ -21,9 +21,10 @@
     <div class="brand" id="brand-help" title="點我看使用說明" style="cursor:pointer">🖌️ 墨課 <span id="app-ver" class="ver"></span></div>
     <div id="rec-controls">
       <button id="btn-mark" class="rec-btn" title="插入段落標記（Stop Marker），隨時可用">🚩 <span class="btn-label">標記</span></button>
-      <!-- T1 探索：Doceri 式錄音（與本頁筆跡共用時間軸），js/rec.js 驅動 -->
-      <button id="btn-rec" class="rec-btn" title="錄音（T1 探索）：可跨頁，聲音跟各頁筆跡同步錄">🔴 <span class="btn-label">錄音</span></button>
-      <button id="btn-rec-pause" class="rec-btn hidden" title="暫停／繼續錄音（T1 探索）：聲音與筆跡時鐘一起停、一起走">⏸ <span class="btn-label">暫停</span></button>
+      <!-- T2 探索：邊寫邊錄影（畫布＋麥克風合錄成一支連續影片），js/rec.js 驅動；課檔不留聲音 -->
+      <button id="btn-rec" class="rec-btn" title="錄影（T2 探索）：錄畫布和聲音成一支連續影片，翻頁不中斷；課檔本身不留聲音">🔴 <span class="btn-label">錄影</span></button>
+      <button id="btn-rec-pause" class="rec-btn hidden" title="暫停／繼續錄影（T2 探索）：只停影片擷取，筆跡照常記錄">⏸ <span class="btn-label">暫停</span></button>
+      <a id="btn-rec-video" class="rec-btn hidden" title="下載上一場錄好的影片（T2 探索）">🎥 <span class="btn-label">下載影片</span></a>
       <!-- v119：全部重播按鈕回頂部（v111 佈局，不用下拉時間軸） -->
       <button id="btn-tl-start" title="跳到最前">◀◀</button>
       <button id="btn-tl-prev" title="上一個標記">◀◀</button>
