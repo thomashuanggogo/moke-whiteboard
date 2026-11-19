@@ -11,8 +11,10 @@
  * - T1：錄音與筆跡共用頁面 LessonClock，聲音存每頁 _trec、同步重播、匯出影片。
  * - T1.1：錄音改 session／段落兩層可跨頁；特許暫停（MR 與頁鐘一起凍結、擋筆）。
  * - T2 起上述聲音段錄製與同步播放退役：段落函式群保留為未觸發死碼（見第 1 節
- *   「T1.1 退役死碼」），同步重播的輪詢還在跑，但 _trec 永遠不再被寫入而靜默；
- *   匯出影片（第 3 節）保留，其混音來源 pageRec() 同理永遠為 null、只出畫面。
+ *   「T1.1 退役死碼」），同步重播的輪詢還在跑，但 _trec 永遠不再被寫入而靜默。
+ * - T2.1 起「🎬 匯出影片（目前頁）」按鈕與 exportVideo／pageEdge 一併移除：
+ *   那是 T1 的 1 倍速重播匯出、與新模型矛盾；影片只來自錄影 session。
+ *   pageRec() 仍在（同步重播輪詢與 _debug 共用），非匯出專屬。
  * - app.js／board.js 的 isRecording() 守衛（抑制錄製中自動停時鐘）原地保留、
  *   不拆不改：對一般編輯無害，T2 session 亦不依賴它們。
  * 已知缺口（探索版接受）：影片 blob 只留記憶體（lastVid），不寫進課程檔；
@@ -28,7 +30,6 @@
 
   const btnRec = $('btn-rec');
   const btnPause = $('btn-rec-pause');
-  const btnExport = $('btn-rec-export');
   const btnVideo = $('btn-rec-video');
 
   // 錄音中按鈕呼吸燈（探索版自帶最小樣式，不動 style.css）
@@ -373,115 +374,11 @@
   }
   setInterval(poll, 120);
 
-  /* ---------------- 3. 匯出影片（目前頁） ---------------- */
-  function pageEdge(pg) {
-    let m = 0;
-    for (const s of pg.strokes || []) {
-      // 改基 v207 相容：v206 起 tlT 統一為「結束戳」（區間 [tlT−dur, tlT]），頁尾＝最大 tlT，不再加 dur
-      const e = (s.tlT === undefined ? 0 : s.tlT);
-      if (e > m) m = e;
-    }
-    const tl = pg.tl;
-    if (tl && tl.erased) for (const x of tl.erased) { if (x.eraseT > m) m = x.eraseT; }
-    return m;
-  }
-
-  async function exportVideo() {
-    if (exporting) return;
-    if (cur) { toast(T('請先停止錄影再匯出影片'), 2600); return; }
-    const pg = board.page;
-    if (!pg || !(pg.strokes && pg.strokes.length)) { toast(T('這一頁還沒有筆跡，先寫幾個字吧'), 2600); return; }
-    if (!window.MediaRecorder || !board.canvas.captureStream) { toast(T('此瀏覽器不支援匯出影片'), 3400); return; }
-    const mime = pickVideoMime();
-    if (!mime) { toast(T('此瀏覽器不支援匯出影片'), 3400); return; }
-    const edge = pageEdge(pg);
-    const rec = pageRec(pg);
-    const modal = $('modal-lessons');
-    if (modal) modal.classList.add('hidden');   // 關掉課程面板，讓使用者看到重播過程
-    exporting = true;
-    if (btnExport) btnExport.disabled = true;
-    if (!pbAudio.paused) pbAudio.pause();
-    toast(T('🎬 匯出中：即時重播錄影（長度同本頁時間軸），請勿切換頁面'), 3000);
-
-    const prevCutoff = board.tlCutoff;
-    let actx = null, srcNode = null;
-    try {
-      const tracks = board.canvas.captureStream(30).getVideoTracks().slice();
-      if (rec) {
-        // 混音準備（resume/decode 在某些環境會卡住或失敗）→ 6 秒逾時就只出畫面，不讓匯出掛死
-        expStage = 'audio-prep';
-        const prep = (async () => {
-          const ac = new (window.AudioContext || window.webkitAudioContext)();
-          try { await ac.resume(); } catch (e) {}   // 不 resume 的話混音軌沒有樣本，容器會把音軌丟掉
-          const raw = await (await fetch(rec.url)).arrayBuffer();
-          const audioBuf = await ac.decodeAudioData(raw);
-          const dest = ac.createMediaStreamDestination();
-          const src = ac.createBufferSource();
-          src.buffer = audioBuf;
-          src.connect(dest);
-          return { ac, src, dest };
-        })().catch(() => null);
-        const got = await Promise.race([prep, new Promise(res => setTimeout(() => res(null), 6000))]);
-        if (got) {
-          actx = got.ac; srcNode = got.src;
-          for (const t of got.dest.stream.getAudioTracks()) tracks.push(t);
-        } else {
-          toast(T('⚠️ 錄音混入失敗或逾時，這次只匯出畫面'), 2600);
-        }
-      }
-      expStage = 'record';
-      const mr = new MediaRecorder(new MediaStream(tracks),
-        { mimeType: mime, videoBitsPerSecond: 5000000, audioBitsPerSecond: 128000 });
-      const chunks = [];
-      mr.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
-      const stopped = new Promise(res => { mr.onstop = res; mr.onerror = res; });
-
-      board.tlCutoff = 0;
-      board.render();
-      mr.start(250);
-      // 對齊：影片 t=0 ≒ 重播 tl=0；音訊在 offsetTl 處進場（offsetTl<0 時從音訊中段開始）
-      const startWall = performance.now() + 150;
-      if (srcNode && actx) {
-        try {
-          srcNode.start(actx.currentTime + 0.15 + Math.max(0, rec.offsetTl) / 1000,
-                        Math.max(0, -rec.offsetTl) / 1000);
-        } catch (e) {}
-      }
-      await new Promise(res => {
-        const step = () => {
-          const t = performance.now() - startWall;
-          if (t >= edge) { board.tlCutoff = edge; board.render(); res(); return; }
-          if (t >= 0) { board.tlCutoff = t; board.render(); }
-          requestAnimationFrame(step);
-        };
-        requestAnimationFrame(step);
-      });
-      try { mr.stop(); } catch (e) {}
-      await stopped;
-      if (srcNode) { try { srcNode.stop(); } catch (e) {} }
-      if (actx) { try { actx.close(); } catch (e) {} }
-
-      const blob = new Blob(chunks, { type: mime.split(';')[0] });
-      const ext = mime.indexOf('mp4') >= 0 ? 'mp4' : 'webm';
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = 'moke-video-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.' + ext;
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => { try { URL.revokeObjectURL(a.href); } catch (e) {} a.remove(); }, 4000);
-      toast(T('🎬 影片已下載') + '（' + ext.toUpperCase() + '，' + Math.round(blob.size / 1024) + ' KB）', 3200);
-    } catch (e) {
-      toast(T('匯出影片失敗'), 3000);
-    } finally {
-      expStage = null;
-      board.tlCutoff = prevCutoff;
-      board.render();
-      exporting = false;
-      if (btnExport) btnExport.disabled = false;
-    }
-  }
-
-  if (btnExport) btnExport.onclick = exportVideo;
+  /* ---------------- 3. 匯出影片（目前頁）——T2.1 已移除 ----------------
+   * 按鈕（#btn-rec-export）、exportVideo() 與 pageEdge() 於 T2.1 刪除：
+   * 該匯出是 T1 的 1 倍速重播路線，與「影片只來自錄影 session」的新模型
+   * 矛盾。第 2 節的 exporting／expStage 狀態欄位保留（poll() 與 MokeRec
+   * 介面仍引用），自此恆為 false／null。 */
 
   /* ---------------- 對外介面（app.js 抑制閒置暫停＋測試鉤子） ---------------- */
   window.MokeRec = {
@@ -491,7 +388,7 @@
       const pg = board.page;
       const rec = pageRec(pg);
       return {
-        version: 'T2',
+        version: 'T2.1',
         recording: !!cur,
         paused: !!(cur && cur.paused),
         vidState: cur && cur.vid ? cur.vid.mr.state : null,
