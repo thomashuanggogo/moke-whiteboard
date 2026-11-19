@@ -14,6 +14,9 @@
  *   「T1.1 退役死碼」），同步重播的輪詢還在跑，但 _trec 永遠不再被寫入而靜默。
  * - T2.1 起「🎬 匯出影片（目前頁）」按鈕與 exportVideo／pageEdge 一併移除：
  *   那是 T1 的 1 倍速重播匯出、與新模型矛盾；影片只來自錄影 session。
+ * - T2.2：錄影鈕旁加即時計時顯示（#rec-time，只累計 recorder 在 recording
+ *   的時間、暫停凍結），按停後最終長度留在下載連結文字裡；課程選單的舊
+ *   說明文字（筆跡＋語音／匯出影片）同步改為新模型文案。
  *   pageRec() 仍在（同步重播輪詢與 _debug 共用），非匯出專屬。
  * - app.js／board.js 的 isRecording() 守衛（抑制錄製中自動停時鐘）原地保留、
  *   不拆不改：對一般編輯無害，T2 session 亦不依賴它們。
@@ -31,6 +34,7 @@
   const btnRec = $('btn-rec');
   const btnPause = $('btn-rec-pause');
   const btnVideo = $('btn-rec-video');
+  const elTime = $('rec-time');
 
   // 錄音中按鈕呼吸燈（探索版自帶最小樣式，不動 style.css）
   try {
@@ -38,6 +42,8 @@
     st.textContent = '#btn-rec.rec-on{background:#e03131;color:#fff;border-color:#e03131;animation:mokeRecPulse 1.2s ease-in-out infinite}' +
       '#btn-rec.rec-paused{animation:none;background:#f08c00;border-color:#f08c00}' +
       '#btn-rec-video{text-decoration:none;background:#1971c2;color:#fff;border:1px solid #1971c2;border-radius:10px;padding:8px 12px;font-size:15px;cursor:pointer;white-space:nowrap}' +
+      '#rec-time{display:inline-flex;align-items:center;background:#343a40;color:#fff;border:1px solid #495057;border-radius:8px;padding:4px 8px;font-size:15px;line-height:1;min-height:34px;white-space:nowrap;font-variant-numeric:tabular-nums}' +
+      '#rec-time.paused{background:#f08c00;border-color:#f08c00}' +
       '@keyframes mokeRecPulse{0%,100%{opacity:1}50%{opacity:.5}}';
     document.head.appendChild(st);
   } catch (e) {}
@@ -61,7 +67,7 @@
    * 不需要頁鐘配合、也不需要擋筆（暫停中寫的字會在繼續錄影後出現在畫面裡，
    * 那正是即時擷取的語意）。app.js／board.js 的 isRecording() 守衛原地保留、
    * 不拆不改，T2 session 不依賴它們成立。 */
-  let cur = null; // { stream, vid, paused }
+  let cur = null; // { stream, vid, paused, tAcc, tSpan }（tAcc/tSpan 為 T2.2 計時）
                   // vid = { mr, chunks, mime, cv, raf }（T2 連續影片）
 
   /* ---------------- T2：邊寫邊錄影（連續影片，不分段） ----------------
@@ -70,7 +76,35 @@
    * 以畫布「邏輯尺寸」（CSS px、偶數化）建立離屏 canvas，錄影期間 rAF 逐幀把
    * board.canvas 等比疊繪上去，再對離屏 canvas captureStream(30)。
    * 音軌直接取 mic stream 的 audio tracks，合錄成同一支影片。 */
-  let lastVid = null; // { blob, url, mime, at } 上一場完成的影片（只留記憶體）
+  let lastVid = null; // { blob, url, mime, at, durMs } 上一場完成的影片（只留記憶體）
+
+  /* ----- T2.2：錄影計時 -----
+   * 計的是「影片的實際長度」：cur.tAcc 累計已結束的 recording 段，cur.tSpan 是
+   * 目前 recording 段的起始 performance.now()（暫停時為 null）。每次顯示都用
+   * 時間戳現算，不靠 interval 累加計數，避免漂移。 */
+  function fmtDur(ms) {
+    const s = Math.max(0, Math.floor((ms || 0) / 1000));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+    const p = n => String(n).padStart(2, '0');
+    return h > 0 ? h + ':' + p(m) + ':' + p(ss) : m + ':' + p(ss);
+  }
+  function fmtSize(n) {
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+    return Math.max(1, Math.round(n / 1024)) + ' KB';
+  }
+  function vidElapsedMs() {
+    if (!cur) return 0;
+    return (cur.tAcc || 0) + (cur.tSpan != null ? performance.now() - cur.tSpan : 0);
+  }
+  function renderRecTime() {
+    if (!elTime) return;
+    if (!cur) { elTime.classList.add('hidden'); elTime.classList.remove('paused'); return; }
+    elTime.classList.remove('hidden');
+    const paused = !!cur.paused;
+    elTime.classList.toggle('paused', paused);
+    elTime.textContent = (paused ? T('⏸ 暫停') + ' ' : '') + fmtDur(vidElapsedMs());
+  }
+  setInterval(renderRecTime, 250);
 
   function startVideo(stream) {
     try {
@@ -115,6 +149,7 @@
   function stopVideo() {
     if (!cur || !cur.vid) return;
     const v = cur.vid;
+    v.durMs = vidElapsedMs();   // 趁 cur 還在，先把最終長度釘在 vid 上（onstop 非同步）
     if (v.raf) { cancelAnimationFrame(v.raf); v.raf = 0; }
     if (v.mr && v.mr.state !== 'inactive') { try { v.mr.stop(); } catch (e) { finalizeVideo(v); } }
   }
@@ -123,7 +158,7 @@
     const blob = new Blob(v.chunks, { type: (v.mime || 'video/webm').split(';')[0] });
     if (!blob.size) return;
     if (lastVid && lastVid.url) { try { URL.revokeObjectURL(lastVid.url); } catch (e) {} }
-    lastVid = { blob, url: URL.createObjectURL(blob), mime: blob.type, at: Date.now() };
+    lastVid = { blob, url: URL.createObjectURL(blob), mime: blob.type, at: Date.now(), durMs: v.durMs || 0 };
     showVideoDownload();
   }
 
@@ -140,7 +175,7 @@
     btnVideo.href = lastVid.url;
     btnVideo.setAttribute('download', videoFileName(lastVid.mime));
     btnVideo.innerHTML = '🎥 <span class="btn-label">' + T('下載影片') + '（' +
-      Math.max(1, Math.round(lastVid.blob.size / 1024)) + ' KB）</span>';
+      fmtDur(lastVid.durMs) + '・' + fmtSize(lastVid.blob.size) + '）</span>';
     btnVideo.classList.remove('hidden');
   }
 
@@ -166,6 +201,7 @@
         ? '▶ <span class="btn-label">' + T('繼續') + '</span>'
         : '⏸ <span class="btn-label">' + T('暫停') + '</span>';
     }
+    renderRecTime();
   }
 
   /* ===== T1.1 退役死碼（T2 起未被呼叫，保留僅供考古） =====
@@ -265,7 +301,7 @@
     // T2：session 只開影片 recorder（畫布＋麥克風合錄）；開不起來整場不成立——
     // 沒有「只錄聲音」的降級路徑，因為聲音段模型已退役、課檔不留聲音。
     clearVideoDownload();   // 上一支影片的下載入口存活到新 session 開始為止
-    cur = { stream, vid: null, paused: false };
+    cur = { stream, vid: null, paused: false, tAcc: 0, tSpan: null };
     cur.vid = startVideo(stream);
     if (!cur.vid) {
       try { stream.getTracks().forEach(t => t.stop()); } catch (e) {}
@@ -273,6 +309,7 @@
       toast(T('此瀏覽器不支援錄影'), 3400);
       return;
     }
+    cur.tSpan = performance.now();   // T2.2：計時自影片 MR 啟動起算
     setRecBtn();
     toast(T('🔴 錄影中：畫布和聲音一起錄，翻頁照樣連續'), 2200);
   }
@@ -292,6 +329,8 @@
     if (!v || !v.mr || typeof v.mr.pause !== 'function') { toast(T('此瀏覽器錄影中不支援暫停'), 2600); return; }
     try { v.mr.pause(); } catch (e) { toast(T('此瀏覽器錄影中不支援暫停'), 2600); return; }
     if (v.mr.state !== 'paused') { toast(T('此瀏覽器錄影中不支援暫停'), 2600); return; }
+    // T2.2：暫停確認成立才結算目前 recording 段，計時凍結
+    if (cur.tSpan != null) { cur.tAcc += performance.now() - cur.tSpan; cur.tSpan = null; }
     cur.paused = true;
     setRecBtn();
     toast(T('⏸ 已暫停錄影'), 2000);
@@ -301,6 +340,7 @@
     if (!cur || !cur.paused) { setRecBtn(); return; }
     const v = cur.vid;
     if (v && v.mr.state === 'paused') { try { v.mr.resume(); } catch (e) {} }
+    if (v && v.mr.state === 'recording') cur.tSpan = performance.now();   // T2.2：確認回到 recording 才開新一段計時
     cur.paused = false;
     setRecBtn();
   }
@@ -388,9 +428,11 @@
       const pg = board.page;
       const rec = pageRec(pg);
       return {
-        version: 'T2.1',
+        version: 'T2.2',
         recording: !!cur,
         paused: !!(cur && cur.paused),
+        vidElapsedMs: cur ? Math.round(vidElapsedMs()) : null,
+        videoDurMs: lastVid ? (lastVid.durMs || 0) : 0,
         vidState: cur && cur.vid ? cur.vid.mr.state : null,
         vidMime: cur && cur.vid ? cur.vid.mime : null,
         hasVideo: !!lastVid,

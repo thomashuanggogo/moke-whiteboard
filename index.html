@@ -24,6 +24,7 @@
       <!-- T2 探索：邊寫邊錄影（畫布＋麥克風合錄成一支連續影片），js/rec.js 驅動；課檔不留聲音 -->
       <button id="btn-rec" class="rec-btn" title="錄影（T2 探索）：錄畫布和聲音成一支連續影片，翻頁不中斷；課檔本身不留聲音">🔴 <span class="btn-label">錄影</span></button>
       <button id="btn-rec-pause" class="rec-btn hidden" title="暫停／繼續錄影（T2 探索）：只停影片擷取，筆跡照常記錄">⏸ <span class="btn-label">暫停</span></button>
+      <span id="rec-time" class="hidden" title="已錄長度（T2.2 探索）：只計實際錄影時間，暫停不計">0:00</span>
       <a id="btn-rec-video" class="rec-btn hidden" title="下載上一場錄好的影片（T2 探索）">🎥 <span class="btn-label">下載影片</span></a>
       <!-- v119：全部重播按鈕回頂部（v111 佈局，不用下拉時間軸） -->
       <button id="btn-tl-start" title="跳到最前">◀◀</button>
@@ -240,7 +241,7 @@
 <div id="modal-lessons" class="modal hidden">
   <div class="modal-card">
     <h2>📂 課程檔案</h2>
-    <p class="hint">課程檔為向量格式（筆跡＋語音），檔案很小，可重播、繼續編輯、匯出影片。</p>
+    <p class="hint">課程檔只存筆跡，不含聲音，檔案小、可重播、可繼續編輯。要連聲音和畫面，請按上方「錄影」鈕另外錄成影片，兩者分開存。</p>
     <div class="row">
       <input id="lesson-title" placeholder="課程名稱（存檔用）">
       <button id="btn-save-lesson" class="primary">💾 儲存目前白板</button>
