@@ -2,7 +2,7 @@
 'use strict';
 
 /* v45：版本號（發版時同步更新 sw.js 的 CACHE） */
-const APP_VERSION = 'T2.2';
+const APP_VERSION = 'T209';
 
 /* ---------- 小工具 ---------- */
 const $ = id => document.getElementById(id);
@@ -1551,13 +1551,33 @@ function fsGuardExit() {
   /* v175：回放中落筆＝在播放頭原地補線（學長回饋：要補線時被 v172 跳到結尾，補的線出現時機全錯）。
      v172 的防復活保留（eraseT 記該筆自己的 tlT）——當年時間分叉的元兇是擦除用了本機時鐘，不是插入本身。
      同一播放頭連續補筆：_tlInsertNext 游標接續（前一筆 tlT＋dur），不疊在同一瞬間；拉動播放頭換位置就重置。 */
-  /* v206：不計時事件（貼紙/複製貼上/調整等）的戳記來源——回放中且播放頭不在末端時，
-     新物件出現在播放頭位置但不佔時間；其餘情況回傳 null，board 改用該頁 liveEdge。 */
+  /* v206：不計時事件（貼紙/調整等）的戳記來源——回放中且播放頭不在末端時，
+     新物件出現在播放頭位置但不佔時間；其餘情況回傳 null，board 改用該頁 liveEdge。
+     v209：複製貼上改佔時間後，此戳記只剩「插入判定」用途（pasteClipboard 據它決定
+     走插入路或 append 路），不再決定貼上筆跡的 tlT。 */
   board.onUntimedStamp = () => (TLC.active && !TLC.isLive()) ? Math.round(TLC.playhead) : null;
+  /* v209：append 貼上佔時間、總長變長——比照 onDrawEnd 的 append 分支（v208），
+     貼完把播放頭推到新結尾：貼上的筆跡立即進算繪名單，下一筆續走 append。 */
+  board.onPasteAppend = () => {
+    if (!TLC.active) return;
+    const e = Math.round(board._liveEdgeT());
+    if (e > TLC.playhead) TLC.goTo(e);
+    renderTlTicks(tlDuration());
+    TLC._ui();
+  };
   board.onDrawStart = () => {
-    if (!TLC.active) { board._tlPlayhead = null; return; }
+    if (!TLC.active) { board._tlPlayhead = null; board._tlAppend = false; return; }
     if (TLC.playing) TLC.pause();
-    if (TLC.isLive()) { board._tlPlayhead = null; board._tlInsertFor = null; return; }
+    if (TLC.isLive()) {
+      board._tlPlayhead = null; board._tlInsertFor = null;
+      // v208：append 落筆（播放頭停在末端）——onDrawEnd 要把播放頭推過新筆，
+      // 否則播放頭留在新筆之前：新筆畫完當下不在算繪名單內，下一筆更被誤判
+      // 成「在播放頭處插入」、把前一筆往後擠，順序倒置（學長 v207 回報）。
+      // 橡皮擦不產生新筆，不在此列。
+      board._tlAppend = board.tool !== 'eraser';
+      return;
+    }
+    board._tlAppend = false;
     // v207：游標有效性——_tlInsertNext 若已超出本頁 liveEdge，代表它指的位置
     // 已被刪除/復原消滅（時間軸縮短），視同換位置重置；否則新筆會被蓋到
     // liveEdge 之外：不讓位、沒區隔旗標，時間軸多出一段死空檔。
@@ -1575,10 +1595,18 @@ function fsGuardExit() {
     // v176：補線後把播放頭推到新筆末端——游標接續的筆 tlT 會超過原本的 cutoff，
     // 不推播放頭就會被算繪濾掉（學長實測：畫完當場消失，以為沒對上時間軸）
     const insertedTo = (board._tlPlayhead !== null && board._tlPlayhead !== undefined) ? board._tlInsertNext : null;
+    const wasAppend = !!board._tlAppend;
     board._tlPlayhead = null;
+    board._tlAppend = false;
     // 回放中新增筆跡後，更新時間軸 UI
     if (TLC.active) {
       if (insertedTo !== null && insertedTo > TLC.playhead) TLC.goTo(insertedTo);
+      // v208：append 同理——寫完把播放頭推到新筆末端（＝新 liveEdge），與插入
+      // 路徑同行為：新筆立即進算繪名單、下一筆續走 append 不被誤判成插入。
+      else if (wasAppend) {
+        const e = Math.round(board._liveEdgeT());
+        if (e > TLC.playhead) TLC.goTo(e);
+      }
       renderTlTicks(tlDuration());
       TLC._ui();
     }

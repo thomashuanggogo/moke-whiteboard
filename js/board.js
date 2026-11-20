@@ -23,6 +23,7 @@ class Board {
     this.textSize = 48;
     this.onEvent = null;          // (type, data) => void，由 app.js 接錄影
     this.onUntimedStamp = null;   // v206：不計時事件的戳記來源（app.js 提供：回放中回傳播放頭，否則 null→用 liveEdge）
+    this.onPasteAppend = null;    // v209：append 貼上完成後的回呼（app.js 提供：播放頭推到新結尾＋時間軸 UI 更新）
     this._clipboard = null;       // v206：筆跡剪貼簿（深拷貝，跨頁存活；複製鈕/貼上鈕用）
     this._pasteSeq = 0;           // v206：連續貼上的累進偏移計數（重新複製時歸零）
     this._selBase = null;         // v206：選取手勢（捏合/縮放）的起始快照，_selGestureBegin/End 管理
@@ -397,11 +398,17 @@ class Board {
         if (t < 1) t = 1;
         // v172：新事件不得早於本頁結尾——轉檔課舊筆跡自帶 Doceri 原始時間，
         // 本機時鐘卻從 0 起算，不夾住的話新筆會被蓋到時間軸最前面（兩套時間）。
+        // v208：append 的新筆要「接在」舊結尾之後——tlT 是結束戳，釘在 edge 會讓
+        // 區間變成 [edge−dur, edge]、與前筆重疊且總長不長（無時鐘頁面首筆實測：
+        // 剛打開的轉檔課寫第一筆，總長紋風不動）。改釘 edge＋dur，區間＝
+        // [edge, edge＋dur]，總長正確延長。erase 事件戳維持釘 edge（事件點在結尾）。
         if ((type === 'add' || type === 'erase') && (this._tlPlayhead === null || this._tlPlayhead === undefined)) {
           const edge = Math.round(this._liveEdgeT());
           if (t < edge) {
-            t = edge;
-            tl.clock.base = edge;
+            t = (type === 'add' && data && data.stroke && data.stroke.tlT === undefined)
+              ? edge + Math.round(data.stroke.dur || 0)
+              : edge;
+            tl.clock.base = t;
             if (tl.clock.running) tl.clock.t0 = performance.now();
           }
         }
@@ -591,12 +598,15 @@ class Board {
   }
   clipboardCount() { return this._clipboard ? this._clipboard.length : 0; }
   /* v206：把剪貼簿貼到目前頁——新 id、整體偏移 0.03×次數（分數空間，clamp 不超出畫布），
-     貼上組成為新選取；每筆走不計時 _emit('add')：tlT 蓋目標頁 liveEdge/播放頭戳、dur 保留
-     （Doceri 模型：複製貼上不佔時間）；復原一次整批退掉（{_dupUndo} 紀錄，同 v204 慣例）。
+     貼上組成為新選取；每筆走不計時 _emit('add')（預賦 tlT 沿用，不喚醒時鐘）；
+     復原一次整批退掉（{_dupUndo} 紀錄，同 v204 慣例）。
      v207：回放中（播放頭不在末端）貼上＝插入，整批視為一個插入單位：先 _insertYield 讓位，
      整批依剪貼簿順序首尾相接佈置（批總長 D＝各筆 dur 總和），最後一筆帶 sepAfter: TL_EPS；
      讓位紀錄（shift＋被位移筆 id）存進 _dupUndo 筆記，整批復原/重做時精確反向/重放位移。
-     append 到 liveEdge（後方無筆）維持 v206 行為：不讓位、不打旗標、各筆同蓋 liveEdge 戳。 */
+     v209：append 路廢止 v206「貼上不佔時間」模型（學長主張：寫字的時間也要複製），
+     改與插入路同模型：自目標頁 liveEdge 起、依剪貼簿順序首尾相接、各筆保留原 dur，
+     總長增加 D；不讓位、不打旗標（shift＝0），刪除走一般漣波精確回收 D。
+     貼完經 onPasteAppend 回呼請 app.js 把播放頭推到新結尾（比照 v208 手寫 append）。 */
   pasteClipboard() {
     if (!this._clipboard || !this._clipboard.length) return [];
     const pg = this.page;
@@ -618,7 +628,8 @@ class Board {
       this._shiftStrokeFrac(c, dx, dy);
       return c;
     });
-    // v207：插入判定——onUntimedStamp 有給播放頭（回放中）才可能是插入；append 走 v206 原路
+    // v207：插入判定——onUntimedStamp 有給播放頭（回放中）才可能是插入
+    // v209：插入未成立（無播放頭、或播放頭後方已無筆可讓位）一律走 append 佈置
     let ins = null;
     if (typeof this.onUntimedStamp === 'function') {
       const v = this.onUntimedStamp();
@@ -634,6 +645,12 @@ class Board {
         }
       }
     }
+    if (!ins) {
+      // v209 append：自本頁 liveEdge 起首尾相接（空白／無時鐘頁 liveEdge＝0、自 0 起跳）；
+      // 預賦 tlT 由不計時 _emit 沿用，v172/v208 clamp 只作用於 tlT 未定的計時新筆、不干擾。
+      let cur = Math.round(this._liveEdgeT());
+      for (const c of copies) { cur += (c.dur || 300); c.tlT = cur; }
+    }
     for (const c of copies) {
       pg.strokes.push(c);
       this._emit('add', { page: this.pageIndex, stroke: c }, true);
@@ -645,6 +662,8 @@ class Board {
     this._lassoSel = copies;
     if (typeof window !== 'undefined' && window._mokeUpdateRotateBtns) window._mokeUpdateRotateBtns();
     this.render();
+    // v209：append 貼上後把播放頭推到新結尾（插入路不推——播放頭留在插入點，v207 行為不變）
+    if (!ins && typeof this.onPasteAppend === 'function') this.onPasteAppend();
     return copies;
   }
   /* v204：複製選取（Doceri 式圈選複製貼上）——複製一份、整體偏移、複製組成為新選取、整批可復原。
@@ -791,7 +810,11 @@ class Board {
       for (const ev of pg.tl.events) ev.t -= shift(ev.t);
       if (pg.tl.erased) {
         for (const e of pg.tl.erased) {
-          if (removed.includes(e.stroke)) { e.eraseT = 0; continue; }  // 剛刪的筆不釘住結尾，總長才縮得下來
+          // v208：幽靈帳本一律跟著漣波對映——本次移除的筆也一樣（舊制只把它的
+          // eraseT 歸零、tlT 留在已被移除的舊座標裡；之後任一次漣波拿那個陳舊
+          // tlT 重推 eraseT，總長被重新釘回舊位置：逆序/混合序擦除會留殘值，
+          // 全擦光總長仍不歸零——學長實測）。對映後幽靈塌到被移除區間的起點，
+          // eraseT 恆等於壓縮後座標，任何擦除順序下總長都正確。
           if (e.stroke.tlT) e.stroke.tlT -= shift(e.stroke.tlT);
           e.eraseT = (e.stroke.tlT || 0);
         }

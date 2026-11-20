@@ -18,6 +18,9 @@
  *   的時間、暫停凍結），按停後最終長度留在下載連結文字裡；課程選單的舊
  *   說明文字（筆跡＋語音／匯出影片）同步改為新模型文案。
  *   pageRec() 仍在（同步重播輪詢與 _debug 共用），非匯出專屬。
+ * - T209：基底自 v207 更新至 v209（rebase，無新功能）：帶入 v208 兩 bug
+ *   修復（尾端 append 推播放頭、擦除幽靈帳本）與 v209 複製貼上佔時間；
+ *   錄影功能與介面無變更。
  * - app.js／board.js 的 isRecording() 守衛（抑制錄製中自動停時鐘）原地保留、
  *   不拆不改：對一般編輯無害，T2 session 亦不依賴它們。
  * 已知缺口（探索版接受）：影片 blob 只留記憶體（lastVid），不寫進課程檔；
@@ -428,7 +431,7 @@
       const pg = board.page;
       const rec = pageRec(pg);
       return {
-        version: 'T2.2',
+        version: 'T209',
         recording: !!cur,
         paused: !!(cur && cur.paused),
         vidElapsedMs: cur ? Math.round(vidElapsedMs()) : null,
